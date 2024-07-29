@@ -15,17 +15,18 @@ PI = math.pi
 LEFT_TURN = +1.0
 RIGHT_TURN = -1.0
 
-TURN_MIN = 0.25
+TURN_MIN = 0.0
 TURN_MAX = 1.0
 SPEED_MIN = 0.0
-SPEED_MAX = 0.5
+SPEED_MAX = 1.0
 SPEED_25_PERCENT = SPEED_MAX / 4
 SPEED_50_PERCENT = SPEED_25_PERCENT * 2
 SPEED_75_PERCENT = SPEED_25_PERCENT * 3
 
 THRESHOLD_OBSTACLE_VERTICAL = 1
 THRESHOLD_OBSTACLE_HORIZONTAL = 0.25
-
+THRESHOLD_VECTOR_DISTANCE = 270  # Adjust this based on your requirements
+SHARP_TURN_THRESHOLD = 0.5  # Adjust this threshold to identify sharp turns
 
 class LineFollower(Node):
     """ Initializes line follower node with the required publishers and subscriptions.
@@ -69,10 +70,17 @@ class LineFollower(Node):
 
         self.ramp_detected = False
         self.ramp_timer = 0  # Timer to keep ramp detection status
-        self.ramp_timer_threshold = 100  # Number of iterations to persist ramp detection after last detection
+        self.ramp_timer_threshold = 180  # Number of iterations to persist ramp detection after last detection
 
         # Create a timer to decrement the ramp timer
         self.create_timer(0.1, self.decrement_ramp_timer)
+
+        # Turn history for smoothing
+        self.turn_history = []
+        self.turn_history_size = 5
+
+        # Previous vectors for vector prediction
+        self.previous_vectors = None
 
     def decrement_ramp_timer(self):
         if self.ramp_timer > 0:
@@ -110,43 +118,66 @@ class LineFollower(Node):
     """
     def edge_vectors_callback(self, message):
         speed = SPEED_MAX
-        turn = TURN_MIN
+        turn = 0.0
 
         vectors = message
         half_width = vectors.image_width / 2
 
-        # NOTE: participants may improve algorithm for line follower.
-        if (vectors.vector_count == 0):  # none.
-            turn=0.0
-            pass
+        def vector_distance(vector):
+            return math.sqrt((vector[1].x - vector[0].x)**2 + (vector[1].y - vector[0].y)**2)
 
-        if (vectors.vector_count == 1):  # curve.
-            # Calculate the magnitude of the x-component of the vector.
-            deviation = vectors.vector_1[1].x - vectors.vector_1[0].x
-            turn = deviation / vectors.image_width
+        # Filter vectors based on distance threshold
+        filtered_vectors = []
+        for i in range(vectors.vector_count):
+            vector = getattr(vectors, f'vector_{i+1}')
+            if vector_distance(vector) <= THRESHOLD_VECTOR_DISTANCE:
+                filtered_vectors.append(vector)
 
-        if (vectors.vector_count == 2):  # straight.
-            # Calculate the middle point of the x-components of the vectors.
-            middle_x_left = (vectors.vector_1[0].x + vectors.vector_1[1].x) / 2
-            middle_x_right = (vectors.vector_2[0].x + vectors.vector_2[1].x) / 2
-            middle_x = (middle_x_left + middle_x_right) / 2
-            deviation = half_width - middle_x
-            turn = deviation / half_width
+        # Use previous vectors if no vectors detected
+        if len(filtered_vectors) == 0 and self.previous_vectors is not None:
+            filtered_vectors = self.previous_vectors
+        else:
+            self.previous_vectors = filtered_vectors
 
-        if (self.traffic_status.stop_sign is True):
+        # Calculate deviation for the filtered vectors
+        if len(filtered_vectors) == 0:
+            turn = 0.0
+        else:
+            deviations = []
+            for vector in filtered_vectors:
+                deviations.append(vector[1].x - vector[0].x)
+            average_deviation = sum(deviations) / len(deviations)
+            turn = average_deviation / vectors.image_width
+
+        if self.traffic_status.stop_sign is True:
             speed = SPEED_MIN
             print("stop sign detected")
 
         if self.ramp_detected is True:
             # Maintain reduced speed on the ramp.
-            speed = 0.3
+            speed = 0.45
             print("ramp/bridge detected")
 
         if self.obstacle_detected is True:
             # Reduce speed for obstacles.
             print("obstacle detected")
 
-        self.rover_move_manual_mode(speed, turn)
+        # Adjust speed based on turn severity
+        if abs(turn) > SHARP_TURN_THRESHOLD:
+            speed = 0.4
+
+        # Clamp the turn value
+        turn = max(min(turn, TURN_MAX), -TURN_MAX)
+
+        # Add current turn to history and keep history size constant
+        self.turn_history.append(turn)
+        if len(self.turn_history) > self.turn_history_size:
+            self.turn_history.pop(0)
+
+        # Calculate smoothed turn value
+        smoothed_turn = sum(self.turn_history) / len(self.turn_history)
+
+        self.rover_move_manual_mode(speed, smoothed_turn)
 
     """ Updates instance member with traffic status message received from /traffic_status.
 
@@ -222,10 +253,8 @@ class LineFollower(Node):
         # Consider a ramp detected if a significant portion of the slopes exceed the threshold
         ramp_detected = any(slope > ramp_threshold for slope in valid_slopes)
         if ramp_detected:
-            # If a ramp is detected, update the ramp_detected flag and reset the ramp timer.
             self.ramp_detected = True
-            self.ramp_timer = self.ramp_timer_threshold  # Reset the ramp timer
-
+            self.ramp_timer = self.ramp_timer_threshold
 
 def main(args=None):
     rclpy.init(args=args)
@@ -234,12 +263,9 @@ def main(args=None):
 
     rclpy.spin(line_follower)
 
-    # Destroy the node explicitly
-    # (optional - otherwise it will be done automatically
-    # when the garbage collector destroys the node object)
     line_follower.destroy_node()
     rclpy.shutdown()
 
-
 if __name__ == '__main__':
     main()
+
