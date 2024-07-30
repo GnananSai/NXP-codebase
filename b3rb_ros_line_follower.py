@@ -158,8 +158,7 @@ class LineFollower(Node):
         if self.traffic_status.stop_sign is True:
             speed = SPEED_MIN
             print("stop sign detected")
-
-        if self.ramp_detected is True:
+        elif self.ramp_detected is True:
             # Maintain reduced speed on the ramp.
             speed = 0.45
             print("ramp/bridge detected")
