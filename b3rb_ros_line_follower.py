@@ -25,8 +25,8 @@ SPEED_75_PERCENT = SPEED_25_PERCENT * 3
 
 THRESHOLD_OBSTACLE_VERTICAL = 1
 THRESHOLD_OBSTACLE_HORIZONTAL = 0.25
-THRESHOLD_VECTOR_DISTANCE = 270  # Adjust this based on your requirements
-SHARP_TURN_THRESHOLD = 0.5  # Adjust this threshold to identify sharp turns
+THRESHOLD_VECTOR_DISTANCE = 300  # Adjust this based on your requirements
+SHARP_TURN_THRESHOLD = 0.62  # Adjust this threshold to identify sharp turns
 
 class LineFollower(Node):
     """ Initializes line follower node with the required publishers and subscriptions.
@@ -142,7 +142,13 @@ class LineFollower(Node):
         # Calculate deviation for the filtered vectors
         if len(filtered_vectors) == 0:
             turn = 0.0
-        else:
+        elif len(filtered_vectors) == 1:
+            # Handle the case of one edge vector (turn)
+            vector = filtered_vectors[0]
+            deviation = vector[1].x - vector[0].x
+            turn = deviation / vectors.image_width
+        elif len(filtered_vectors) == 2:
+            # Handle the case of two edge vectors (straight line)
             deviations = []
             for vector in filtered_vectors:
                 deviations.append(vector[1].x - vector[0].x)
@@ -161,13 +167,15 @@ class LineFollower(Node):
         if self.obstacle_detected is True:
             # Reduce speed for obstacles.
             print("obstacle detected")
+        
+        # Clamp the turn value
+        turn = max(min(turn, TURN_MAX), -TURN_MAX)
 
         # Adjust speed based on turn severity
         if abs(turn) > SHARP_TURN_THRESHOLD:
-            speed = 0.4
+            speed *= 0.29
 
-        # Clamp the turn value
-        turn = max(min(turn, TURN_MAX), -TURN_MAX)
+        
 
         # Add current turn to history and keep history size constant
         self.turn_history.append(turn)
@@ -178,6 +186,7 @@ class LineFollower(Node):
         smoothed_turn = sum(self.turn_history) / len(self.turn_history)
 
         self.rover_move_manual_mode(speed, smoothed_turn)
+
 
     """ Updates instance member with traffic status message received from /traffic_status.
 
@@ -268,4 +277,3 @@ def main(args=None):
 
 if __name__ == '__main__':
     main()
-
